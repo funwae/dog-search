@@ -11,4 +11,5 @@ build/
 .env
 lostdog.db
 .data/
+data/
 .DS_Store
