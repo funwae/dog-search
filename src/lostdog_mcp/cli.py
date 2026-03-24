@@ -196,20 +196,26 @@ def search(
         rows = crawl_run(session, case_id, radius_miles=radius, days_back=days)
         elapsed = time.time() - start
 
-    console.print(f"\n[green]Found {len(rows)} candidates in {elapsed:.1f}s[/green]")
+        # Extract data while still in session
+        results = [
+            {"score": r.final_score, "title": r.title, "source": r.source_name, "location": r.location_text}
+            for r in rows
+        ]
 
-    if rows:
+    console.print(f"\n[green]Found {len(results)} candidates in {elapsed:.1f}s[/green]")
+
+    if results:
         table = Table(title="Top Results")
         table.add_column("Score", style="bold")
         table.add_column("Title")
         table.add_column("Source")
         table.add_column("Location")
 
-        for r in sorted(rows, key=lambda x: x.final_score, reverse=True)[:10]:
-            score_color = "green" if r.final_score >= 0.5 else "yellow" if r.final_score >= 0.25 else "dim"
+        for r in sorted(results, key=lambda x: x["score"], reverse=True)[:10]:
+            score_color = "green" if r["score"] >= 0.5 else "yellow" if r["score"] >= 0.25 else "dim"
             table.add_row(
-                f"[{score_color}]{r.final_score:.3f}[/{score_color}]",
-                r.title[:60], r.source_name, r.location_text[:40],
+                f"[{score_color}]{r['score']:.3f}[/{score_color}]",
+                r["title"][:60], r["source"], r["location"][:40],
             )
         console.print(table)
 
@@ -224,8 +230,12 @@ def leads(
     db_url = _init_db()
     with get_session(db_url) as session:
         rows = candidate_list(session, case_id, page=page, limit=limit)
+        items = [
+            {"id": r.id, "score": r.final_score, "title": r.title, "source": r.source_name, "status": r.status}
+            for r in rows
+        ]
 
-    if not rows:
+    if not items:
         console.print("[yellow]No candidates found.[/yellow]")
         return
 
@@ -237,17 +247,14 @@ def leads(
     table.add_column("Source")
     table.add_column("Status")
 
-    for i, r in enumerate((page - 1) * limit + 1, start=1):
-        pass
-
-    for i, r in enumerate(rows, start=(page - 1) * limit + 1):
-        score_color = "green" if r.final_score >= 0.5 else "yellow" if r.final_score >= 0.25 else "dim"
-        status_color = "green" if r.status == "likely_match" else "red" if r.status == "false_positive" else "white"
+    for i, r in enumerate(items, start=(page - 1) * limit + 1):
+        score_color = "green" if r["score"] >= 0.5 else "yellow" if r["score"] >= 0.25 else "dim"
+        status_color = "green" if r["status"] == "likely_match" else "red" if r["status"] == "false_positive" else "white"
         table.add_row(
-            str(i), r.id,
-            f"[{score_color}]{r.final_score:.3f}[/{score_color}]",
-            r.title[:50], r.source_name,
-            f"[{status_color}]{r.status}[/{status_color}]",
+            str(i), r["id"],
+            f"[{score_color}]{r['score']:.3f}[/{score_color}]",
+            r["title"][:50], r["source"],
+            f"[{status_color}]{r['status']}[/{status_color}]",
         )
     console.print(table)
 
