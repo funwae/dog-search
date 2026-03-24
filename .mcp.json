@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "lostdog-deepsearch": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["-m", "lostdog_mcp.server"],
+      "env": {
+        "LOSTDOG_ENV": "dev",
+        "LOSTDOG_DB_URL": "sqlite:///./lostdog.db",
+        "LOSTDOG_EVIDENCE_DIR": "./data/evidence",
+        "LOSTDOG_CASES_DIR": "./data/cases",
+        "LOSTDOG_SCREENSHOT_DIR": "./data/screenshots",
+        "LOSTDOG_ENABLE_BROWSER_SESSION": "${LOSTDOG_ENABLE_BROWSER_SESSION:-false}"
+      }
+    }
+  }
+}
