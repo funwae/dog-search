@@ -1,4 +1,4 @@
-"""LostDog Deep Search MCP starter package."""
+"""LostDog Deep Search MCP — local-first missing-dog search system."""
 
 __all__ = ["__version__"]
-__version__ = "0.1.0"
+__version__ = "0.2.0"

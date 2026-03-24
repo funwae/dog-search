@@ -13,10 +13,12 @@ from .storage.models import CaseRow, CandidateRow  # noqa: F401 — ensure table
 from .schemas import MissingDogCase
 from .services.case_service import case_create, case_get, case_list, case_to_schema
 from .services.candidate_service import candidate_list, candidate_score, candidate_mark, score_and_upsert_lead
-from .services.crawl_service import crawl_run
+from .services.crawl_service import crawl_run, crawl_digest
 from .services.export_service import case_export_bundle
+from .services.evidence_service import archive_page, list_evidence
 from .adapters.public_web import search_public_web
 from .adapters.shelters import search_shelters
+from .adapters.browser_session import search_with_session, BrowserSessionDisabledError
 
 _settings: Settings | None = None
 
@@ -140,6 +142,58 @@ TOOLS: dict[str, dict[str, Any]] = {
             "properties": {"case_id": {"type": "string"}},
             "required": ["case_id"],
         },
+    },
+    "case_add_images": {
+        "description": "Add images to a case and generate perceptual hash embeddings.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "case_id": {"type": "string"},
+                "image_paths": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["case_id", "image_paths"],
+        },
+    },
+    "crawl_digest": {
+        "description": "Get a summary of candidates since a given timestamp.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "case_id": {"type": "string"},
+                "since": {"type": "string", "description": "ISO datetime"},
+            },
+            "required": ["case_id"],
+        },
+    },
+    "search_browser_session": {
+        "description": "Search using the user's authenticated browser session (must be enabled).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "case_id": {"type": "string"},
+                "url": {"type": "string", "description": "URL to search"},
+                "cookies": {"type": "object", "description": "Session cookies"},
+            },
+            "required": ["case_id", "url"],
+        },
+    },
+    "evidence_archive": {
+        "description": "Archive a web page as evidence.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"url": {"type": "string"}},
+            "required": ["url"],
+        },
+    },
+    "evidence_list": {
+        "description": "List all archived evidence.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    "case_list": {
+        "description": "List all active cases.",
+        "inputSchema": {"type": "object", "properties": {
+            "status": {"type": "string", "default": "active"},
+        }},
     },
 }
 
@@ -276,16 +330,105 @@ def _handle_export(args: dict) -> dict:
         return case_export_bundle(session, args["case_id"], output_dir=settings.cases_dir)
 
 
+def _handle_case_add_images(args: dict) -> dict:
+    import json as _json
+    from .vision.embedder import embed_image
+    settings = _get_settings()
+    with get_session(settings.db_url) as session:
+        row = case_get(session, args["case_id"])
+        if row is None:
+            return {"error": "Case not found"}
+        existing = _json.loads(row.image_paths_json)
+        new_paths = args.get("image_paths", [])
+        existing.extend(new_paths)
+        row.image_paths_json = _json.dumps(existing)
+        session.add(row)
+        session.commit()
+        embeddings_info = []
+        for path in new_paths:
+            try:
+                embs = embed_image(path)
+                embeddings_info.append({"path": path, "embeddings": len(embs), "labels": [e.label for e in embs]})
+            except Exception as e:
+                embeddings_info.append({"path": path, "error": str(e)})
+        return {"case_id": args["case_id"], "total_images": len(existing), "new_embeddings": embeddings_info}
+
+
+def _handle_crawl_digest(args: dict) -> dict:
+    from datetime import datetime as _dt
+    settings = _get_settings()
+    since = None
+    if args.get("since"):
+        since = _dt.fromisoformat(args["since"])
+    with get_session(settings.db_url) as session:
+        return crawl_digest(session, args["case_id"], since=since)
+
+
+def _handle_search_browser_session(args: dict) -> dict:
+    settings = _get_settings()
+    try:
+        leads = asyncio.get_event_loop().run_until_complete(
+            search_with_session(
+                args["url"],
+                cookies=args.get("cookies"),
+                location="",
+            )
+        )
+    except BrowserSessionDisabledError as e:
+        return {"error": str(e)}
+    if not leads:
+        return {"candidates_added": 0, "candidates": []}
+    with get_session(settings.db_url) as session:
+        rows = []
+        for lead in leads:
+            c = score_and_upsert_lead(session, args["case_id"], lead)
+            rows.append({"id": c.id, "title": c.title, "score": c.final_score})
+        return {"candidates_added": len(rows), "candidates": rows}
+
+
+def _handle_evidence_archive(args: dict) -> dict:
+    settings = _get_settings()
+    result = asyncio.get_event_loop().run_until_complete(
+        archive_page(args["url"], evidence_dir=settings.evidence_dir)
+    )
+    return result
+
+
+def _handle_evidence_list(args: dict) -> dict:
+    settings = _get_settings()
+    evidence = list_evidence(settings.evidence_dir)
+    return {"count": len(evidence), "evidence": evidence[:50]}
+
+
+def _handle_case_list(args: dict) -> dict:
+    settings = _get_settings()
+    with get_session(settings.db_url) as session:
+        rows = case_list(session, status=args.get("status", "active"))
+        return {
+            "count": len(rows),
+            "cases": [
+                {"id": r.id, "title": r.title, "location": r.last_seen_location, "status": r.status}
+                for r in rows
+            ],
+        }
+
+
 _HANDLERS: dict[str, Any] = {
     "case_create": _handle_case_create,
     "case_get": _handle_case_get,
+    "case_list": _handle_case_list,
+    "case_add_images": _handle_case_add_images,
     "search_public_web": _handle_search_public_web,
     "search_found_pet_sources": _handle_search_found_pet,
+    "search_browser_session": _handle_search_browser_session,
     "candidate_list": _handle_candidate_list,
     "candidate_score": _handle_candidate_score,
     "candidate_mark": _handle_candidate_mark,
     "crawl_run": _handle_crawl_run,
+    "crawl_digest": _handle_crawl_digest,
     "case_export_bundle": _handle_export,
+    "evidence_archive": _handle_evidence_archive,
+    "evidence_list": _handle_evidence_list,
 }
 
 
@@ -308,7 +451,7 @@ def handle_request(request: dict) -> dict:
         return _jsonrpc_response(req_id, {
             "protocolVersion": "2024-11-05",
             "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": {"name": "lostdog-deepsearch-mcp", "version": "0.1.0"},
+            "serverInfo": {"name": "lostdog-deepsearch-mcp", "version": "0.2.0"},
         })
 
     if method == "notifications/initialized":
