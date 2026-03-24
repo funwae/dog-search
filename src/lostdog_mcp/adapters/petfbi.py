@@ -1,0 +1,1 @@
+"""Pet FBI adapter placeholder."""

@@ -1,0 +1,1 @@
+"""PawBoost adapter placeholder."""
